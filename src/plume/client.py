@@ -72,22 +72,38 @@ def upload_and_sign(client: Mistral, path: Path) -> str:
     return _with_retry(_do, what=f"upload {path.name}")
 
 
-def build_document(client: Mistral, path: Path, *, upload_images: bool = False) -> dict[str, Any]:
-    """Build the ``document`` payload for an OCR request.
+def upload_file_id(client: Mistral, path: Path) -> str:
+    """Upload a file for OCR and return its file id."""
+    def _do() -> str:
+        uploaded = client.files.upload(
+            file={"file_name": path.name, "content": path.read_bytes()},
+            purpose="ocr",
+            timeout_ms=UPLOAD_TIMEOUT_MS,
+        )
+        return uploaded.id
 
-    For realtime, images are embedded inline as base64 (one small request). For
-    batch (``upload_images=True``) every file is uploaded and referenced by a
-    signed URL instead, so the batch JSONL stays tiny no matter how many files.
+    return _with_retry(_do, what=f"upload {path.name}")
+
+
+def build_document(client: Mistral, path: Path) -> dict[str, Any]:
+    """Build the ``document`` payload for a realtime OCR request.
+
+    Images are embedded inline as base64 (one small request); PDFs are uploaded
+    and referenced by a short-lived signed URL.
     """
-    is_image = path.suffix.lower() in IMAGE_EXTS
-
-    if is_image and not upload_images:
+    if path.suffix.lower() in IMAGE_EXTS:
         return {"type": "image_url", "image_url": _data_uri(path)}
+    return {"type": "document_url", "document_url": upload_and_sign(client, path)}
 
-    url = upload_and_sign(client, path)
-    if is_image:
-        return {"type": "image_url", "image_url": url}
-    return {"type": "document_url", "document_url": url}
+
+def build_batch_document(client: Mistral, path: Path) -> dict[str, Any]:
+    """Build the ``document`` payload for a batch OCR request.
+
+    The batch endpoint requires files be referenced by ``file_id`` (it rejects
+    inline base64 and signed URLs), so every file is uploaded first. This also
+    keeps the batch JSONL tiny regardless of input count or size.
+    """
+    return {"type": "file", "file_id": upload_file_id(client, path)}
 
 
 def ocr_realtime(

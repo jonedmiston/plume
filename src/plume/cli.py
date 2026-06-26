@@ -215,7 +215,13 @@ def _submit_batch(mc, settings: Settings, documents: list[Path], cwd: Path) -> N
     items = []
     upload_errors: list[tuple[Path, str]] = []
 
-    # For batch we upload every file and reference it by signed URL, so the job
+    if settings.include_confidence:
+        console.print(
+            "[dim]Note: the batch OCR endpoint doesn't return confidence scores; "
+            "use realtime mode if you need them.[/dim]"
+        )
+
+    # For batch we upload every file and reference it by file_id, so the job
     # file stays tiny regardless of how many (or how large) the inputs are.
     with Progress(
         SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
@@ -225,7 +231,7 @@ def _submit_batch(mc, settings: Settings, documents: list[Path], cwd: Path) -> N
         for i, doc in enumerate(documents):
             progress.update(task, description=f"Uploading {doc.name}")
             try:
-                document = client.build_document(mc, doc, upload_images=True)
+                document = client.build_batch_document(mc, doc)
             except Exception as exc:  # noqa: BLE001 - skip the file, keep going
                 upload_errors.append((doc, str(exc)))
                 progress.advance(task)
@@ -249,7 +255,7 @@ def _submit_batch(mc, settings: Settings, documents: list[Path], cwd: Path) -> N
     jsonl = client.build_batch_jsonl(
         entries,
         include_images=settings.include_images,
-        confidence_granularity="page" if settings.include_confidence else None,
+        confidence_granularity=None,  # batch endpoint rejects this field
     )
     try:
         job_id = client.create_batch_job(mc, jsonl=jsonl, model=settings.model)
