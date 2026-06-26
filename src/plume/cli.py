@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -10,11 +11,12 @@ import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn
-from rich.prompt import Confirm, Prompt
+from rich.prompt import Confirm, IntPrompt, Prompt
 
 from . import batch_state, client, output
 from .config import (
     API_KEY_ENV,
+    DEFAULT_CONCURRENCY,
     DEFAULT_MODEL,
     DEFAULT_OUTPUT_DIR,
     SUPPORTED_EXTS,
@@ -56,6 +58,7 @@ def main(
     force: bool = typer.Option(False, "--force", "-f", help="Re-process files even if output already exists."),
     output_dir: Path = typer.Option(Path(DEFAULT_OUTPUT_DIR), "--output-dir", "-o", help="Where to write output."),
     model: str = typer.Option(DEFAULT_MODEL, "--model", help="OCR model id."),
+    concurrency: Optional[int] = typer.Option(None, "--concurrency", "-c", min=1, help="Parallel uploads in batch mode (prompted if omitted)."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Accept defaults; never prompt."),
     download: Optional[bool] = typer.Option(None, "--download/--no-download", help="In resume mode, answer the download prompt without asking."),
     new: bool = typer.Option(False, "--new", help="Start a new run even if a pending batch file exists."),
@@ -83,6 +86,7 @@ def main(
         force=force,
         output_dir=output_dir,
         model=model,
+        concurrency=concurrency,
         yes=yes,
     )
 
@@ -101,7 +105,7 @@ def main(
 # --- Settings resolution ---------------------------------------------------
 
 
-def _resolve_settings(*, path, mode, recursive, types, include_images, include_confidence, force, output_dir, model, yes) -> Settings:
+def _resolve_settings(*, path, mode, recursive, types, include_images, include_confidence, force, output_dir, model, concurrency, yes) -> Settings:
     is_dir = path.is_dir()
 
     if mode is None:
@@ -121,6 +125,14 @@ def _resolve_settings(*, path, mode, recursive, types, include_images, include_c
     if include_confidence is None:
         include_confidence = True if yes else Confirm.ask("Save confidence + flag low-confidence pages?", default=True)
 
+    # Concurrency only affects batch uploads, so only ask about it for batch.
+    if concurrency is None:
+        if mode == "batch" and not yes:
+            concurrency = IntPrompt.ask("Parallel uploads", default=DEFAULT_CONCURRENCY)
+        else:
+            concurrency = DEFAULT_CONCURRENCY
+    concurrency = max(1, int(concurrency))
+
     return Settings(
         path=path,
         mode=mode,
@@ -131,6 +143,7 @@ def _resolve_settings(*, path, mode, recursive, types, include_images, include_c
         force=force,
         output_dir=output_dir,
         model=model,
+        concurrency=concurrency,
     )
 
 
@@ -223,23 +236,33 @@ def _submit_batch(mc, settings: Settings, documents: list[Path], cwd: Path) -> N
 
     # For batch we upload every file and reference it by file_id, so the job
     # file stays tiny regardless of how many (or how large) the inputs are.
+    # Uploads are network-bound, so we run several concurrently.
+    documents_by_id: dict[int, dict] = {}
     with Progress(
         SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
         BarColumn(), MofNCompleteColumn(), console=console,
     ) as progress:
-        task = progress.add_task("Uploading", total=len(documents))
-        for i, doc in enumerate(documents):
-            progress.update(task, description=f"Uploading {doc.name}")
-            try:
-                document = client.build_batch_document(mc, doc)
-            except Exception as exc:  # noqa: BLE001 - skip the file, keep going
-                upload_errors.append((doc, str(exc)))
+        task = progress.add_task(f"Uploading (x{settings.concurrency})", total=len(documents))
+        with ThreadPoolExecutor(max_workers=settings.concurrency) as pool:
+            futures = {
+                pool.submit(client.build_batch_document, mc, doc): (i, doc)
+                for i, doc in enumerate(documents)
+            }
+            for future in as_completed(futures):
+                i, doc = futures[future]
+                try:
+                    documents_by_id[i] = future.result()
+                except Exception as exc:  # noqa: BLE001 - skip the file, keep going
+                    upload_errors.append((doc, str(exc)))
                 progress.advance(task)
-                continue
-            custom_id = f"doc-{i:04d}"
-            entries.append({"custom_id": custom_id, "document": document})
-            items.append(batch_state.BatchItem(custom_id=custom_id, source=_rel(doc, root)))
-            progress.advance(task)
+
+    # Build entries in the original (stable) order for deterministic custom_ids.
+    for i, doc in enumerate(documents):
+        if i not in documents_by_id:
+            continue
+        custom_id = f"doc-{i:04d}"
+        entries.append({"custom_id": custom_id, "document": documents_by_id[i]})
+        items.append(batch_state.BatchItem(custom_id=custom_id, source=_rel(doc, root)))
 
     if upload_errors:
         console.print(f"[yellow]Skipped {len(upload_errors)} file(s) that failed to upload:[/yellow]")

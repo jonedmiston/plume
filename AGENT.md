@@ -113,6 +113,7 @@ Batch is **stateful and spans multiple runs.** It works like this:
 | `--force, -f` | Re-process even if output exists | off (skip done) |
 | `--output-dir, -o DIR` | Output location | `./ocr-output` |
 | `--model NAME` | OCR model id | `mistral-ocr-latest` |
+| `--concurrency, -c N` | Parallel uploads in batch mode | 8 |
 | `--yes, -y` | Never prompt; accept defaults | off — **always pass this** |
 | `--download` / `--no-download` | Auto-answer the resume download prompt | prompt |
 | `--new` | Start a new run even if a batch is pending | off |

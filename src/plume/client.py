@@ -33,17 +33,27 @@ def make_client(api_key: str) -> Mistral:
     return Mistral(api_key=api_key)
 
 
-def _with_retry(action: Callable[[], Any], *, what: str) -> Any:
-    """Run ``action`` with exponential backoff for transient network errors.
+def _http_status(exc: Exception) -> int | None:
+    """Best-effort HTTP status code from an SDK error, if it carries one."""
+    resp = getattr(exc, "raw_response", None)
+    return getattr(resp, "status_code", None) if resp is not None else None
 
-    The SDK retries on 429/5xx status codes already, but a dropped/aborted
-    connection surfaces as an exception, so we retry those ourselves.
+
+def _with_retry(action: Callable[[], Any], *, what: str) -> Any:
+    """Run ``action`` with exponential backoff for transient errors only.
+
+    Network drops and 429/5xx responses are retried; other client errors (e.g.
+    401 auth, 402 billing, 422 validation) are permanent, so we fail fast on
+    them rather than uselessly retrying.
     """
     last: Exception | None = None
     for attempt in range(MAX_ATTEMPTS):
         try:
             return action()
-        except Exception as exc:  # noqa: BLE001 - retry any transport error
+        except Exception as exc:  # noqa: BLE001
+            status = _http_status(exc)
+            if status is not None and 400 <= status < 500 and status != 429:
+                raise RuntimeError(f"{what} failed: {exc}") from exc
             last = exc
             if attempt < MAX_ATTEMPTS - 1:
                 time.sleep(2 ** attempt)

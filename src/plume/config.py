@@ -22,6 +22,9 @@ TRACKING_FILENAME = ".plume-batch.json"
 #: Pages whose mean confidence falls below this are flagged for review.
 LOW_CONFIDENCE_THRESHOLD = 0.85
 
+#: Default number of files uploaded concurrently.
+DEFAULT_CONCURRENCY = 8
+
 # Supported input extensions grouped by how plume submits them to the API.
 # Images are sent inline as base64; documents are uploaded and referenced by
 # a signed URL.
@@ -43,6 +46,7 @@ class Settings:
     force: bool = False
     output_dir: Path = field(default_factory=lambda: Path(DEFAULT_OUTPUT_DIR))
     model: str = DEFAULT_MODEL
+    concurrency: int = DEFAULT_CONCURRENCY
 
     def resolved_output_dir(self) -> Path:
         return self.output_dir if self.output_dir.is_absolute() else self.path / self.output_dir

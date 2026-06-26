@@ -65,6 +65,7 @@ plume
 | `--force, -f` | reprocess files that already have output | off (skip done) |
 | `--output-dir, -o` | where output is written | `./ocr-output` |
 | `--model` | OCR model id | `mistral-ocr-latest` |
+| `--concurrency, -c` | files uploaded in parallel (batch) | 8 |
 | `--yes, -y` | accept defaults, never prompt | off |
 | `--download / --no-download` | answer the resume download prompt | prompt |
 | `--new` | start a new run even if a batch is pending | off |
